@@ -1,6 +1,4 @@
-
 from youtubesearchpython import VideosSearch
-
 
 def get_yt_video_link(query):
     videos_search = VideosSearch(query=query, limit=3)
