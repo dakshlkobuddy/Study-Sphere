@@ -1,4 +1,3 @@
-
 import os
 from dotenv import load_dotenv
 import streamlit as st
@@ -19,7 +18,7 @@ DEVICE = os.getenv('DEVICE', 'cpu')  # Default to 'cpu' if not set
 working_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(working_dir)
 
-subjects_list = ["Biology", "Physics", "Chemistry"]
+subjects_list = ["Physics", "Chemistry", "Biology"]
 
 # Helper to setup vectorstore and chat_chain
 def get_vector_db_path(chapter, subject):
@@ -46,12 +45,12 @@ def setup_chain(selected_chapter, selected_subject):
 
 
 st.set_page_config(
-    page_title="StudyPal",
-    page_icon="🌀",
+    page_title="Study Sphere",
+    page_icon="♻️",
     layout="centered"
 )
 
-st.title("📚 Study Pal")
+st.title("📚 Study Sphere")
 
 # Initialize the chat history and video history as session state in Streamlit
 if "chat_history" not in st.session_state:
@@ -93,7 +92,7 @@ for idx, message in enumerate(st.session_state.chat_history):
                     st.info(f"{title}\n\nLink: {link}")
 
 # Input field for user's message
-user_input = st.chat_input("Ask AI")
+user_input = st.chat_input("Ask Your Doubts Here!")
 
 if user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
@@ -112,9 +111,15 @@ if user_input:
 
         st.subheader("Video Reference")
         video_refs = []
-        for i in range(3):
-            st.info(f"{video_titles[i]}\n\nLink: {video_links[i]}")
-            video_refs.append((video_titles[i], video_links[i]))
+        
+        if not video_titles or not video_links:
+            st.info("No video references found.")
+        else:
+            max_videos = min(3, len(video_titles), len(video_links))
+            
+            for i in range(max_videos):
+                st.info(f"{video_titles[i]}\n\nLink: {video_links[i]}")
+                video_refs.append((video_titles[i], video_links[i]))
 
         st.session_state.chat_history.append({"role": "assistant", "content": response['answer']})
         st.session_state.video_history.append(video_refs)
