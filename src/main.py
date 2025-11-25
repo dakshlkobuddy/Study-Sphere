@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 import streamlit as st
+
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
 from langchain.chains import ConversationalRetrievalChain
@@ -11,39 +12,61 @@ from chatbot_utility import get_chapter_list
 from get_yt_video import get_yt_video_link
 
 
-# Load environment variables
+# ------------------------- LOAD ENV ------------------------- #
 load_dotenv()
-DEVICE = os.getenv('DEVICE', 'cpu')  # Default to 'cpu' if not set
+DEVICE = os.getenv('DEVICE', 'cpu')
 
 working_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(working_dir)
 
 subjects_list = ["Physics", "Chemistry", "Biology"]
 
-# Helper to setup vectorstore and chat_chain
-def get_vector_db_path(chapter, subject):
-    if chapter == "All Chapters":
-        return f"{parent_dir}/vector_db/class_12_{subject.lower()}_vector_db"
-    return f"{parent_dir}/chapters_vector_db/{chapter}"
 
+# ------------------------- VECTOR DB PATH ------------------------- #
+def get_vector_db_path(chapter, subject):
+    subject = subject.lower()
+
+    if chapter == "All Chapters":
+        return f"{parent_dir}/vector_db/class_12_{subject}_vector_db"
+
+    return f"{parent_dir}/chapters_vector_db/{subject}/{chapter}"
+
+
+# ------------------------- SETUP CHAIN ------------------------- #
 def setup_chain(selected_chapter, selected_subject):
     vector_db_path = get_vector_db_path(selected_chapter, selected_subject)
-    embeddings = HuggingFaceEmbeddings(model_kwargs={"device": DEVICE}) # Use device from env
-    vectorstore = Chroma(persist_directory=vector_db_path, embedding_function=embeddings)
+
+    embeddings = HuggingFaceEmbeddings(model_kwargs={"device": DEVICE})
+    vectorstore = Chroma(
+        persist_directory=vector_db_path,
+        embedding_function=embeddings
+    )
+
     llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
-    memory = ConversationBufferMemory(llm=llm, output_key='answer', memory_key='chat_history', return_messages=True)
+
+    memory = ConversationBufferMemory(
+        llm=llm,
+        output_key='answer',
+        memory_key='chat_history',
+        return_messages=True
+    )
+
     chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
         memory=memory,
-        chain_type="stuff",
-        retriever=vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 3}),
+        retriever=vectorstore.as_retriever(
+            search_type="mmr",
+            search_kwargs={"k": 8, "fetch_k": 20}
+        ),
         return_source_documents=True,
         get_chat_history=lambda h: h,
         verbose=True
     )
+
     return chain
 
 
+# ------------------------- STREAMLIT UI ------------------------- #
 st.set_page_config(
     page_title="Study Sphere",
     page_icon="♻️",
@@ -52,12 +75,14 @@ st.set_page_config(
 
 st.title("📚 Study Sphere")
 
-# Initialize the chat history and video history as session state in Streamlit
+# Session State Setup
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "video_history" not in st.session_state:
     st.session_state.video_history = []
 
+
+# ------------------------- SELECT SUBJECT ------------------------- #
 selected_subject = st.selectbox(
     label="Select a Subject from class 12",
     options=subjects_list,
@@ -74,52 +99,100 @@ if selected_subject:
     )
 
     if selected_chapter:
-        # Reset chat_chain if chapter changes
         if st.session_state.get('selected_chapter') != selected_chapter:
-            st.session_state.chat_chain = setup_chain(selected_chapter, selected_subject)
+            st.session_state.chat_chain = setup_chain(
+                selected_chapter, selected_subject
+            )
+
         st.session_state.selected_chapter = selected_chapter
 
-# Display previous messages
+
+# ------------------------- DISPLAY CHAT HISTORY ------------------------- #
 for idx, message in enumerate(st.session_state.chat_history):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-        # Show video references if present for assistant messages
+
         if message["role"] == "assistant" and idx < len(st.session_state.video_history):
-            video_refs = st.session_state.video_history[idx]
-            if video_refs:
+            videos = st.session_state.video_history[idx]
+            if videos:
                 st.subheader("Video Reference")
-                for title, link in video_refs:
+                for title, link in videos:
                     st.info(f"{title}\n\nLink: {link}")
 
-# Input field for user's message
+
+# ------------------------- USER INPUT ------------------------- #
 user_input = st.chat_input("Ask Your Doubts Here!")
 
 if user_input:
-    st.session_state.chat_history.append({"role": "user", "content": user_input})
-    st.session_state.video_history.append(None)  # No video refs for user
+    st.session_state.chat_history.append(
+        {"role": "user", "content": user_input}
+    )
+    st.session_state.video_history.append(None)
 
     with st.chat_message("user"):
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
         response = st.session_state.chat_chain({"question": user_input})
-        st.markdown(response['answer'])
+        answer = response["answer"]
+        st.markdown(answer)
 
-        search_query = ', '.join([item["content"] for item in st.session_state.chat_history if item["role"] == "user"])
+        # -----------------------------------------------------------
+        # 100% FINAL VIDEO BLOCKER (NEVER FAILS)
+        # -----------------------------------------------------------
 
-        video_titles, video_links = get_yt_video_link(search_query)
+        answer_lower = answer.strip().lower()
 
-        st.subheader("Video Reference")
-        video_refs = []
-        
-        if not video_titles or not video_links:
-            st.info("No video references found.")
+        block_keywords = [
+            "not provided",
+            "not mentioned",
+            "not in this chapter",
+            "not found",
+            "no information",
+            "not related",
+            "doesn't mention",
+            "does not mention",
+            "the text you provided",
+            "the provided text",
+            "the given text",
+            "the context does not",
+            "context does not",
+            "irrelevant",
+            "cannot be found",
+            "not available in this chapter",
+        ]
+
+        # Check phrasing
+        should_block_video = any(keyword in answer_lower for keyword in block_keywords)
+
+        # Also block if retrieved text is irrelevant / too small
+        retrieved_text = ""
+        if "source_documents" in response:
+            retrieved_text = " ".join(
+                [d.page_content for d in response["source_documents"]]
+            )
+            if len(retrieved_text.strip()) < 50:
+                should_block_video = True
+
+        # FINAL DECISION
+        if should_block_video:
+            video_refs = []   # do NOT show any video section OR message
         else:
-            max_videos = min(3, len(video_titles), len(video_links))
-            
-            for i in range(max_videos):
-                st.info(f"{video_titles[i]}\n\nLink: {video_links[i]}")
-                video_refs.append((video_titles[i], video_links[i]))
+            titles, links = get_yt_video_link(user_input)
+            video_refs = []
 
-        st.session_state.chat_history.append({"role": "assistant", "content": response['answer']})
+            if titles and links:
+                st.subheader("Video Reference")
+                max_videos = min(3, len(titles), len(links))
+
+                for i in range(max_videos):
+                    st.info(f"{titles[i]}\n\nLink: {links[i]}")
+                    video_refs.append((titles[i], links[i]))
+            else:
+                video_refs = []   # silently ignore
+
+        # Save to streamlit session
+        st.session_state.chat_history.append(
+            {"role": "assistant", "content": answer}
+        )
         st.session_state.video_history.append(video_refs)

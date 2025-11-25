@@ -4,33 +4,30 @@ working_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(working_dir)
 
 def get_chapter_list(selected_subject):
-
-    if selected_subject == "Biology":
-        subject_name = selected_subject.lower()
-        chapters_dir = f"{parent_dir}/data/class_12/{subject_name}"
-        chapters_list = os.listdir(chapters_dir)
-        chapters_list = [x[:-4] for x in chapters_list]
-        chapters_list.sort(key=lambda x: int(x.split('.')[0]))
-        return chapters_list
+    """
+    Retrieve sorted chapter list for a given subject.
     
-    elif selected_subject == "Chemistry":
-        subject_name = selected_subject.lower()
-        chapters_dir = f"{parent_dir}/data/class_12/{subject_name}"
-        chapters_list = os.listdir(chapters_dir)
-        chapters_list = [x[:-4] for x in chapters_list]
-        chapters_list.sort(key=lambda x: int(x.split('.')[0]))
-        return chapters_list
+    Args:
+        selected_subject (str): Subject name (Biology, Chemistry, or Physics)
     
-    elif selected_subject == "Physics":
-        subject_name = selected_subject.lower()
-        chapters_dir = f"{parent_dir}/data/class_12/{subject_name}"
-        chapters_list = os.listdir(chapters_dir)
-        chapters_list = [x[:-4] for x in chapters_list]
-        chapters_list.sort(key=lambda x: int(x.split('.')[0]))
-        return chapters_list
+    Returns:
+        list: Sorted list of chapter names
+    """
+    subject_name = selected_subject.lower()
+    chapters_dir = f"{parent_dir}/data/class_12/{subject_name}"
     
-    else:
-        print("Select One Subject Out of Biology, Chemistry, Physics")
+    if not os.path.exists(chapters_dir):
+        print(f"Directory not found: {chapters_dir}")
+        return []
+    
+    chapters_list = [x[:-4] for x in os.listdir(chapters_dir) if x.endswith(".pdf")]
+    
+    try:
+        chapters_list.sort(key=lambda x: int(x.split('.')[0]))
+    except (ValueError, IndexError):
+        chapters_list.sort()
+    
+    return chapters_list
 
 
 # chapters_list = get_chapter_list("Biology")
