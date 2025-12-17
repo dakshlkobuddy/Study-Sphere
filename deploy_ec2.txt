@@ -1,0 +1,44 @@
+
+Open ports: 8501 (EC2 -> Security group)
+
+ssh -i "ec2-key-pair-2.pem" ubuntu@ec2-44-222-119-153.compute-1.amazonaws.com
+
+sudo apt update
+sudo apt install python3-venv
+sudo apt install tesseract-ocr
+sudo apt install poppler-utils
+
+
+git clone <url>
+
+password: ACCESS TOKEN
+
+cd <project_directory>
+
+python3 -m venv venv
+
+source venv/bin/activate
+
+pip install -r requirements.txt
+
+nano .env
+
+(paste the .env values)
+
+
+python src/vectorize_script.py
+
+streamlit run main.py
+
+nohup streamlit run src/main.py > streamlit.log 2>&1 &
+
+tail -f streamlit.log
+
+lsof -i:8501
+
+pkill -f "streamlit src/run main.py"
+
+(run in nohup to run teh process in background)
+
+
+http://<ec2_public_ip>:8501/
