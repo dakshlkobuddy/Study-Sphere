@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 import streamlit as st
+import torch
 
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
@@ -13,11 +14,27 @@ from get_yt_video import get_yt_video_link
 
 
 # ------------------------- LOAD ENV ------------------------- #
-load_dotenv()
-DEVICE = os.getenv('DEVICE', 'cpu')
-
 working_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(working_dir)
+
+# Load env from both project root and src directory for predictable local runs.
+load_dotenv(os.path.join(parent_dir, ".env"))
+load_dotenv(os.path.join(working_dir, ".env"), override=True)
+
+
+def resolve_device() -> str:
+    device = os.getenv('DEVICE', 'cpu').strip().lower()
+
+    # Guard against invalid/unsupported devices to avoid runtime model transfer errors.
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        return 'cpu'
+    if device == 'mps' and not (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()):
+        return 'cpu'
+
+    return device
+
+
+DEVICE = resolve_device()
 
 subjects_list = ["Physics", "Chemistry", "Biology"]
 
@@ -36,7 +53,21 @@ def get_vector_db_path(chapter, subject):
 def setup_chain(selected_chapter, selected_subject):
     vector_db_path = get_vector_db_path(selected_chapter, selected_subject)
 
-    embeddings = HuggingFaceEmbeddings(model_kwargs={"device": DEVICE})
+    try:
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-mpnet-base-v2",
+            model_kwargs={"device": DEVICE}
+        )
+    except NotImplementedError as err:
+        if "meta tensor" not in str(err).lower():
+            raise
+
+        # Fallback for meta-device initialization bugs in upstream torch/transformers combos.
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-mpnet-base-v2",
+            model_kwargs={"device": "cpu"}
+        )
+
     vectorstore = Chroma(
         persist_directory=vector_db_path,
         embedding_function=embeddings

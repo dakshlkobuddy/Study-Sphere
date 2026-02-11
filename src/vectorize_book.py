@@ -4,21 +4,49 @@ from langchain_community.document_loaders import UnstructuredFileLoader, Directo
 from langchain_text_splitters import CharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-
-load_dotenv()
-
-DEVICE = os.getenv("DEVICE", "cpu")
+import torch
 
 # Folder structure
 working_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(working_dir)
+
+# Load env from both project root and src directory for predictable local runs.
+load_dotenv(os.path.join(parent_dir, ".env"))
+load_dotenv(os.path.join(working_dir, ".env"), override=True)
+
+
+def resolve_device() -> str:
+    device = os.getenv("DEVICE", "cpu").strip().lower()
+
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        return "cpu"
+    if device == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+        return "cpu"
+
+    return device
+
+
+DEVICE = resolve_device()
 
 data_dir = f"{parent_dir}/data/class_12"
 vector_db_dir = f"{parent_dir}/vector_db"
 chapters_vector_db_dir = f"{parent_dir}/chapters_vector_db"
 
 # Embedding model
-embedding = HuggingFaceEmbeddings(model_kwargs={"device": DEVICE})
+try:
+    embedding = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-mpnet-base-v2",
+        model_kwargs={"device": DEVICE}
+    )
+except NotImplementedError as err:
+    if "meta tensor" not in str(err).lower():
+        raise
+
+    # Fallback for meta-device initialization bugs in upstream torch/transformers combos.
+    embedding = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-mpnet-base-v2",
+        model_kwargs={"device": "cpu"}
+    )
 text_splitter = CharacterTextSplitter(chunk_size=700, chunk_overlap=150)
 
 
