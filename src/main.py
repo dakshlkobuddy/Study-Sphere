@@ -27,7 +27,6 @@ from qa_engine import (
 )
 from upload_utility import build_user_vector_db
 from upload_utility import cleanup_old_session_data, validate_uploaded_files
-from startup_checks import run_startup_checks
 
 
 working_dir = os.path.dirname(os.path.abspath(__file__))
@@ -148,23 +147,20 @@ def _display_source_name(filename):
 
 
 st.set_page_config(page_title="Study Sphere", page_icon="S", layout="centered")
-st.title("Study Sphere")
+st.markdown(
+    "<h1 style='margin:0 0 0.4rem 0; line-height:1.2;'>Study Sphere Learning Assistant</h1>",
+    unsafe_allow_html=True,
+)
 st.markdown(
     """
 <style>
-.block-container {padding-top: 1rem; padding-bottom: 1rem;}
+.block-container {padding-top: 2rem; padding-bottom: 1rem;}
 div[data-testid="stVerticalBlock"] > div:has(> div[data-testid="stMarkdownContainer"]) {margin-bottom: 0.25rem;}
 div[data-testid="stChatMessage"] {padding-top: 0.35rem; padding-bottom: 0.35rem;}
 </style>
 """,
     unsafe_allow_html=True,
 )
-
-startup_checks = run_startup_checks(UNIFIED_VECTOR_DB_PATH)
-with st.expander("Health Check", expanded=False):
-    for check in startup_checks:
-        status = "OK" if check["ok"] else "FAIL"
-        st.write(f"- {check['name']}: {status} - {check['message']}")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -288,6 +284,9 @@ with st.sidebar:
     st.subheader("Chapter Quiz")
     quiz_count = st.slider("Questions", min_value=3, max_value=10, value=5, step=1)
     generate_quiz_clicked = st.button("Generate Quiz From Chapter")
+uploaded_files = []
+
+if source_mode == "My Documents":
     st.subheader("Upload Documents")
     uploaded_files = st.file_uploader(
         "Upload your files (PDF, DOCX, TXT)",
@@ -299,7 +298,7 @@ with st.sidebar:
         ),
     )
 
-if uploaded_files:
+if source_mode == "My Documents" and uploaded_files:
     valid_files, upload_validation_errors = validate_uploaded_files(
         uploaded_files=uploaded_files,
         allowed_extensions={"pdf", "docx", "txt"},
@@ -322,7 +321,7 @@ if uploaded_files:
     else:
         uploaded_files = valid_files
 
-if uploaded_files:
+if source_mode == "My Documents" and uploaded_files:
     st.info(f"{len(uploaded_files)} file(s) uploaded.")
     with st.expander("View uploaded files"):
         for file in uploaded_files:
@@ -379,35 +378,50 @@ if uploaded_files:
                 "Upload ingestion failed. Check file type/size/page limits and parser support. "
                 f"Error ID: {error_id}. Details: {err}"
             )
-else:
-    st.session_state.user_upload_db_path = None
-    st.session_state.user_upload_collection_name = None
-    st.session_state.uploads_signature_processed = ""
-    get_user_vectorstore.clear()
 
-selected_subject = st.selectbox(
-    label="Select a Subject from class 12",
-    options=subjects_list,
-    index=None,
+user_docs_available = bool(
+    st.session_state.user_upload_db_path
+    and os.path.isdir(st.session_state.user_upload_db_path)
 )
 
+if source_mode == "Both" and user_docs_available:
+    st.subheader("Uploaded Documents")
+    session_upload_dir = os.path.join(parent_dir, "uploads", st.session_state.session_id)
+    with st.expander("View uploaded files"):
+        if os.path.isdir(session_upload_dir):
+            for file_name in sorted(os.listdir(session_upload_dir)):
+                file_path = os.path.join(session_upload_dir, file_name)
+                if os.path.isfile(file_path):
+                    size_kb = round(os.path.getsize(file_path) / 1024, 2)
+                    st.write(f"- {file_name} ({size_kb} KB)")
+        else:
+            st.caption("Uploaded files not found on disk for this session.")
+
+selected_subject = None
 selected_chapter = None
-if selected_subject:
-    chapter_list = get_chapter_list(selected_subject) + ["All Chapters"]
-    selected_chapter = st.selectbox(
-        label=f"Select a Chapter from class 12 - {selected_subject}",
-        options=chapter_list,
-        index=0,
+if source_mode in ("NCERT", "Both"):
+    selected_subject = st.selectbox(
+        label="Select a Subject from class 12",
+        options=subjects_list,
+        index=None,
     )
 
-if selected_subject and selected_chapter:
-    selection_changed = (
-        st.session_state.selected_subject != selected_subject
-        or st.session_state.selected_chapter != selected_chapter
-    )
-    if selection_changed:
-        st.session_state.selected_subject = selected_subject
-        st.session_state.selected_chapter = selected_chapter
+    if selected_subject:
+        chapter_list = get_chapter_list(selected_subject) + ["All Chapters"]
+        selected_chapter = st.selectbox(
+            label=f"Select a Chapter from class 12 - {selected_subject}",
+            options=chapter_list,
+            index=0,
+        )
+
+    if selected_subject and selected_chapter:
+        selection_changed = (
+            st.session_state.selected_subject != selected_subject
+            or st.session_state.selected_chapter != selected_chapter
+        )
+        if selection_changed:
+            st.session_state.selected_subject = selected_subject
+            st.session_state.selected_chapter = selected_chapter
 
 assistant_idx = 0
 for idx, message in enumerate(st.session_state.chat_history):
@@ -430,17 +444,17 @@ if source_mode == "NCERT":
     if not chat_ready:
         st.info("Select subject and chapter first to start chatting.")
 elif source_mode == "My Documents":
-    chat_ready = st.session_state.user_upload_db_path is not None
+    chat_ready = user_docs_available
     if not chat_ready:
         st.info("Upload and process files first, then ask questions in My Documents mode.")
 else:
     chat_ready = (
         selected_subject is not None
         and selected_chapter is not None
-        and st.session_state.user_upload_db_path is not None
+        and user_docs_available
     )
     if not chat_ready:
-        st.info("For Both mode, select NCERT subject/chapter and upload documents first.")
+        st.info("For Both mode, select NCERT subject/chapter and ensure uploaded docs are available.")
 
 active_vectorstore = None
 active_user_vectorstore = None
