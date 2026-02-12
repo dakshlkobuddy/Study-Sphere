@@ -18,6 +18,21 @@ python src/vectorize_script.py --unified --recreate-unified
 streamlit run src/main.py
 ```
 
+## Docker
+Build image:
+```bash
+docker build -t study-sphere:latest .
+```
+
+Run container:
+```bash
+docker run --rm -p 8501:8501 -e GROQ_API_KEY=your_key_here -v ${PWD}/vector_db:/app/vector_db study-sphere:latest
+```
+
+Healthcheck notes:
+- Runs `python src/health_check.py`
+- Requires `GROQ_API_KEY` and `/app/vector_db/class_12_unified_vector_db`
+
 ## Automated Tests
 Run locally:
 ```bash

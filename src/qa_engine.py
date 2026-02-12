@@ -10,6 +10,7 @@ from retrieval_utility import (
 
 FALLBACK_ANSWER = "I don't know from the selected source material."
 UPLOADS_FALLBACK_ANSWER = "Not found in uploaded docs."
+LOW_RELIABILITY_MESSAGE = "I couldn't find reliable info in selected sources."
 
 
 def _mode_instruction(query_mode):
@@ -33,7 +34,7 @@ def _language_instruction(language):
     return "Return the full answer in English."
 
 
-def format_context(scored_docs, limit=6):
+def format_context(scored_docs, limit=3):
     context_parts = []
     for idx, (doc, _) in enumerate(scored_docs[:limit], start=1):
         metadata = doc.metadata or {}
@@ -151,6 +152,9 @@ def answer_from_sources(
         use_metadata_filter=use_metadata_filter,
     )
 
+    if scored_docs and confidence < 0.5:
+        return LOW_RELIABILITY_MESSAGE, True, []
+
     if should_use_fallback(
         scored_docs=scored_docs,
         confidence=confidence,
@@ -158,7 +162,7 @@ def answer_from_sources(
     ):
         return fallback_message, True, []
 
-    context_text = format_context(scored_docs, limit=6)
+    context_text = format_context(scored_docs, limit=3)
     citations = build_citations(scored_docs)
     history_text = format_recent_history(chat_history)
     mode_instruction = _mode_instruction(query_mode)
@@ -216,11 +220,14 @@ def answer_from_multiple_sources(
         query=user_input,
         docs=merged_docs,
         reranker=reranker,
-        top_n=8,
+        top_n=3,
     )
     confidence = 0.0
     if reranked:
         confidence = 1.0 / (1.0 + math.exp(-reranked[0][1]))
+
+    if reranked and confidence < 0.5:
+        return LOW_RELIABILITY_MESSAGE, True, []
 
     if should_use_fallback(
         scored_docs=reranked,
@@ -229,7 +236,7 @@ def answer_from_multiple_sources(
     ):
         return fallback_message, True, []
 
-    context_text = format_context(reranked, limit=8)
+    context_text = format_context(reranked, limit=3)
     citations = build_citations(reranked)
     history_text = format_recent_history(chat_history)
     mode_instruction = _mode_instruction(query_mode)

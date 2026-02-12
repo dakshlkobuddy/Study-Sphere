@@ -16,6 +16,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from app_config import load_project_env, resolve_device, get_unified_vector_db_path
 from chatbot_utility import get_chapter_list
 from get_yt_video import get_yt_video_link
+from observability import get_logger, new_error_id
 from qa_engine import (
     answer_from_sources,
     answer_from_multiple_sources,
@@ -26,6 +27,7 @@ from qa_engine import (
 )
 from upload_utility import build_user_vector_db
 from upload_utility import cleanup_old_session_data, validate_uploaded_files
+from startup_checks import run_startup_checks
 
 
 working_dir = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +35,7 @@ parent_dir = load_project_env(working_dir)
 DEVICE = resolve_device()
 UNIFIED_VECTOR_DB_PATH = get_unified_vector_db_path(parent_dir)
 subjects_list = ["Physics", "Chemistry", "Biology"]
+logger = get_logger()
 
 
 @st.cache_resource
@@ -137,8 +140,31 @@ def _chat_to_pdf_bytes(chat_history, subject, chapter, mode, language):
     return buffer.getvalue()
 
 
+def _display_source_name(filename):
+    name = (filename or "N/A").strip()
+    if name.lower().endswith(".pdf.pdf"):
+        return name[:-4]
+    return name
+
+
 st.set_page_config(page_title="Study Sphere", page_icon="S", layout="centered")
 st.title("Study Sphere")
+st.markdown(
+    """
+<style>
+.block-container {padding-top: 1rem; padding-bottom: 1rem;}
+div[data-testid="stVerticalBlock"] > div:has(> div[data-testid="stMarkdownContainer"]) {margin-bottom: 0.25rem;}
+div[data-testid="stChatMessage"] {padding-top: 0.35rem; padding-bottom: 0.35rem;}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+startup_checks = run_startup_checks(UNIFIED_VECTOR_DB_PATH)
+with st.expander("Health Check", expanded=False):
+    for check in startup_checks:
+        status = "OK" if check["ok"] else "FAIL"
+        st.write(f"- {check['name']}: {status} - {check['message']}")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -161,6 +187,68 @@ if "user_upload_collection_name" not in st.session_state:
 if "upload_cleanup_done" not in st.session_state:
     st.session_state.upload_cleanup_done = False
 
+
+def _assistant_count(messages):
+    return sum(1 for msg in messages if msg.get("role") == "assistant")
+
+
+def _normalize_artifact_history():
+    """
+    Keep artifacts aligned to assistant messages only.
+    Supports migration from old state where artifacts were indexed by all chat messages.
+    """
+    assistant_total = _assistant_count(st.session_state.chat_history)
+
+    if len(st.session_state.video_history) == len(st.session_state.chat_history):
+        st.session_state.video_history = [
+            st.session_state.video_history[idx]
+            for idx, msg in enumerate(st.session_state.chat_history)
+            if msg.get("role") == "assistant"
+        ]
+    if len(st.session_state.citation_history) == len(st.session_state.chat_history):
+        st.session_state.citation_history = [
+            st.session_state.citation_history[idx]
+            for idx, msg in enumerate(st.session_state.chat_history)
+            if msg.get("role") == "assistant"
+        ]
+
+    if len(st.session_state.video_history) > assistant_total:
+        st.session_state.video_history = st.session_state.video_history[:assistant_total]
+    if len(st.session_state.citation_history) > assistant_total:
+        st.session_state.citation_history = st.session_state.citation_history[:assistant_total]
+
+    while len(st.session_state.video_history) < assistant_total:
+        st.session_state.video_history.append([])
+    while len(st.session_state.citation_history) < assistant_total:
+        st.session_state.citation_history.append([])
+
+
+def _render_assistant_tabs(answer_text, citations, videos):
+    tabs = st.tabs(["Answer", "Sources", "Videos"])
+    with tabs[0]:
+        st.markdown(answer_text)
+    with tabs[1]:
+        with st.expander("Sources", expanded=False):
+            if citations:
+                for citation in citations:
+                    source_name = _display_source_name(citation.get("filename"))
+                    page = citation.get("page", "N/A")
+                    score = citation.get("score", 0.0)
+                    st.markdown(
+                        f"Source: {source_name}  \n"
+                        f"Page: {page}  \n"
+                        f"Relevance Score: {score:.2f}"
+                    )
+            else:
+                st.caption("No source references.")
+    with tabs[2]:
+        with st.expander("Videos", expanded=False):
+            if videos:
+                for title, link in videos:
+                    st.info(f"{title}\n\nLink: {link}")
+            else:
+                st.caption("No video references.")
+
 MAX_UPLOAD_FILES = 8
 MAX_UPLOAD_FILE_MB = 15
 MAX_UPLOAD_PDF_PAGES = 200
@@ -175,6 +263,8 @@ if not st.session_state.upload_cleanup_done:
             f"Cleanup completed: removed {removed['uploads']} old upload folder(s) and "
             f"{removed['uploads_vector_db']} old vector DB folder(s)."
         )
+
+_normalize_artifact_history()
 
 with st.sidebar:
     st.subheader("Answer Settings")
@@ -276,9 +366,18 @@ if uploaded_files:
                 for parse_error in result["parse_errors"]:
                     st.write(f"- {parse_error}")
         except Exception as err:
+            error_id = new_error_id()
+            logger.exception(
+                "upload_ingestion_failed",
+                extra={
+                    "event": "upload_ingestion_failed",
+                    "error_id": error_id,
+                    "session_id": st.session_state.session_id,
+                },
+            )
             st.error(
                 "Upload ingestion failed. Check file type/size/page limits and parser support. "
-                f"Details: {err}"
+                f"Error ID: {error_id}. Details: {err}"
             )
 else:
     st.session_state.user_upload_db_path = None
@@ -310,24 +409,20 @@ if selected_subject and selected_chapter:
         st.session_state.selected_subject = selected_subject
         st.session_state.selected_chapter = selected_chapter
 
+assistant_idx = 0
 for idx, message in enumerate(st.session_state.chat_history):
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if message["role"] == "assistant" and idx < len(st.session_state.citation_history):
-            citations = st.session_state.citation_history[idx]
-            if citations:
-                st.caption("Citations")
-                for citation in citations:
-                    st.caption(
-                        f"file: {citation['filename']} | chapter: {citation['chapter']} | "
-                        f"page: {citation['page']} | chunk: {citation['chunk_id']} | score: {citation['score']:.3f}"
-                    )
-        if message["role"] == "assistant" and idx < len(st.session_state.video_history):
-            videos = st.session_state.video_history[idx]
-            if videos:
-                st.subheader("Video Reference")
-                for title, link in videos:
-                    st.info(f"{title}\n\nLink: {link}")
+        if message["role"] == "assistant":
+            citations = []
+            videos = []
+            if assistant_idx < len(st.session_state.citation_history):
+                citations = st.session_state.citation_history[assistant_idx]
+            if assistant_idx < len(st.session_state.video_history):
+                videos = st.session_state.video_history[assistant_idx]
+            _render_assistant_tabs(message["content"], citations, videos)
+            assistant_idx += 1
+        else:
+            st.markdown(message["content"])
 
 chat_ready = selected_subject is not None and selected_chapter is not None
 if source_mode == "NCERT":
@@ -407,8 +502,19 @@ if chat_ready and generate_quiz_clicked:
         st.subheader("Generated Quiz")
         st.markdown(quiz_markdown)
     except FileNotFoundError as err:
-        st.error(str(err))
-
+        error_id = new_error_id()
+        logger.exception(
+            "quiz_generation_failed_file_not_found",
+            extra={"event": "quiz_generation_failed", "error_id": error_id, "source_mode": source_mode},
+        )
+        st.error(f"{err} (Error ID: {error_id})")
+    except Exception as err:
+        error_id = new_error_id()
+        logger.exception(
+            "quiz_generation_failed",
+            extra={"event": "quiz_generation_failed", "error_id": error_id, "source_mode": source_mode},
+        )
+        st.error(f"Quiz generation failed. Error ID: {error_id}. Details: {err}")
 pdf_data = _chat_to_pdf_bytes(
     st.session_state.chat_history,
     st.session_state.selected_subject,
@@ -428,8 +534,6 @@ user_input = st.chat_input("Ask your question from selected sources", disabled=n
 
 if user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
-    st.session_state.video_history.append(None)
-    st.session_state.citation_history.append(None)
 
     with st.chat_message("user"):
         st.markdown(user_input)
@@ -469,18 +573,23 @@ if user_input:
                     fallback_message=fallback_message,
                 )
         except FileNotFoundError as err:
-            answer = str(err)
+            error_id = new_error_id()
+            logger.exception(
+                "answer_generation_failed_file_not_found",
+                extra={"event": "answer_generation_failed", "error_id": error_id, "source_mode": source_mode},
+            )
+            answer = f"{err} (Error ID: {error_id})"
             low_confidence = True
             citations = []
-
-        st.markdown(answer)
-        if citations:
-            st.caption("Citations")
-            for citation in citations:
-                st.caption(
-                    f"file: {citation['filename']} | chapter: {citation['chapter']} | "
-                    f"page: {citation['page']} | chunk: {citation['chunk_id']} | score: {citation['score']:.3f}"
-                )
+        except Exception as err:
+            error_id = new_error_id()
+            logger.exception(
+                "answer_generation_failed",
+                extra={"event": "answer_generation_failed", "error_id": error_id, "source_mode": source_mode},
+            )
+            answer = f"Something went wrong while generating the answer. Error ID: {error_id}"
+            low_confidence = True
+            citations = []
 
         if low_confidence:
             video_refs = []
@@ -488,12 +597,12 @@ if user_input:
             titles, links = get_yt_video_link(user_input)
             video_refs = []
             if titles and links:
-                st.subheader("Video Reference")
                 max_videos = min(3, len(titles), len(links))
                 for i in range(max_videos):
-                    st.info(f"{titles[i]}\n\nLink: {links[i]}")
                     video_refs.append((titles[i], links[i]))
 
+        _render_assistant_tabs(answer, citations, video_refs)
+
         st.session_state.chat_history.append({"role": "assistant", "content": answer})
-        st.session_state.video_history.append(video_refs)
-        st.session_state.citation_history.append(citations)
+        st.session_state.video_history.append(video_refs or [])
+        st.session_state.citation_history.append(citations or [])

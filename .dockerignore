@@ -1,0 +1,18 @@
+.git
+.github
+venv
+__pycache__
+.pytest_cache
+.mypy_cache
+*.pyc
+*.pyo
+*.pyd
+*.log
+logs
+uploads
+uploads_vector_db
+eval/results
+study sphere.pem
+src.zip
+.env
+**/.DS_Store

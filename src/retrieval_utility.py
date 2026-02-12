@@ -3,37 +3,37 @@ import re
 
 
 DEFAULT_RETRIEVAL_CONFIG = {
-    "output_k": 6,
-    "candidate_k": 16,
+    "output_k": 3,
+    "candidate_k": 10,
     "fetch_k": 32,
     "lambda_mult": 0.5,
-    "rerank_top_n": 6,
+    "rerank_top_n": 3,
     "confidence_threshold": 0.55,
 }
 
 SUBJECT_RETRIEVAL_CONFIG = {
     "physics": {
-        "output_k": 6,
-        "candidate_k": 18,
+        "output_k": 3,
+        "candidate_k": 10,
         "fetch_k": 36,
         "lambda_mult": 0.35,
-        "rerank_top_n": 6,
+        "rerank_top_n": 3,
         "confidence_threshold": 0.58,
     },
     "chemistry": {
-        "output_k": 6,
-        "candidate_k": 16,
+        "output_k": 3,
+        "candidate_k": 10,
         "fetch_k": 32,
         "lambda_mult": 0.45,
-        "rerank_top_n": 6,
+        "rerank_top_n": 3,
         "confidence_threshold": 0.56,
     },
     "biology": {
-        "output_k": 6,
-        "candidate_k": 14,
+        "output_k": 3,
+        "candidate_k": 10,
         "fetch_k": 28,
         "lambda_mult": 0.6,
-        "rerank_top_n": 6,
+        "rerank_top_n": 3,
         "confidence_threshold": 0.53,
     },
 }
