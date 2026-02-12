@@ -19,9 +19,7 @@ from get_yt_video import get_yt_video_link
 from observability import get_logger, new_error_id
 from qa_engine import (
     answer_from_sources,
-    answer_from_multiple_sources,
     generate_quiz_from_sources,
-    generate_quiz_from_multiple_sources,
     FALLBACK_ANSWER,
     UPLOADS_FALLBACK_ANSWER,
 )
@@ -266,7 +264,7 @@ with st.sidebar:
     st.subheader("Answer Settings")
     source_mode = st.radio(
         "Source Mode",
-        ["NCERT", "My Documents", "Both"],
+        ["NCERT", "My Documents"],
         index=0,
         horizontal=True,
     )
@@ -384,22 +382,9 @@ user_docs_available = bool(
     and os.path.isdir(st.session_state.user_upload_db_path)
 )
 
-if source_mode == "Both" and user_docs_available:
-    st.subheader("Uploaded Documents")
-    session_upload_dir = os.path.join(parent_dir, "uploads", st.session_state.session_id)
-    with st.expander("View uploaded files"):
-        if os.path.isdir(session_upload_dir):
-            for file_name in sorted(os.listdir(session_upload_dir)):
-                file_path = os.path.join(session_upload_dir, file_name)
-                if os.path.isfile(file_path):
-                    size_kb = round(os.path.getsize(file_path) / 1024, 2)
-                    st.write(f"- {file_name} ({size_kb} KB)")
-        else:
-            st.caption("Uploaded files not found on disk for this session.")
-
 selected_subject = None
 selected_chapter = None
-if source_mode in ("NCERT", "Both"):
+if source_mode == "NCERT":
     selected_subject = st.selectbox(
         label="Select a Subject from class 12",
         options=subjects_list,
@@ -443,18 +428,10 @@ if source_mode == "NCERT":
     chat_ready = selected_subject is not None and selected_chapter is not None
     if not chat_ready:
         st.info("Select subject and chapter first to start chatting.")
-elif source_mode == "My Documents":
+else:
     chat_ready = user_docs_available
     if not chat_ready:
         st.info("Upload and process files first, then ask questions in My Documents mode.")
-else:
-    chat_ready = (
-        selected_subject is not None
-        and selected_chapter is not None
-        and user_docs_available
-    )
-    if not chat_ready:
-        st.info("For Both mode, select NCERT subject/chapter and ensure uploaded docs are available.")
 
 active_vectorstore = None
 active_user_vectorstore = None
@@ -465,20 +442,9 @@ if source_mode == "NCERT":
         except FileNotFoundError as err:
             st.error(str(err))
             chat_ready = False
-elif source_mode == "My Documents":
-    if chat_ready:
-        try:
-            active_user_vectorstore = get_user_vectorstore(
-                st.session_state.user_upload_db_path,
-                st.session_state.session_id,
-            )
-        except FileNotFoundError as err:
-            st.error(str(err))
-            chat_ready = False
 else:
     if chat_ready:
         try:
-            active_vectorstore = get_vectorstore()
             active_user_vectorstore = get_user_vectorstore(
                 st.session_state.user_upload_db_path,
                 st.session_state.session_id,
@@ -490,29 +456,16 @@ else:
 if chat_ready and generate_quiz_clicked:
     try:
         with st.spinner("Generating chapter quiz..."):
-            if source_mode == "Both":
-                quiz_markdown = generate_quiz_from_multiple_sources(
-                    selected_subject=st.session_state.selected_subject or "Physics",
-                    selected_chapter=st.session_state.selected_chapter or "All Chapters",
-                    source_specs=[
-                        {"vectorstore": active_vectorstore, "use_metadata_filter": True},
-                        {"vectorstore": active_user_vectorstore, "use_metadata_filter": False},
-                    ],
-                    llm=get_llm(),
-                    num_questions=quiz_count,
-                    output_language=output_language,
-                )
-            else:
-                target_vectorstore = active_vectorstore if source_mode == "NCERT" else active_user_vectorstore
-                quiz_markdown = generate_quiz_from_sources(
-                    st.session_state.selected_subject or "Physics",
-                    st.session_state.selected_chapter or "All Chapters",
-                    target_vectorstore,
-                    get_llm(),
-                    num_questions=quiz_count,
-                    output_language=output_language,
-                    use_metadata_filter=(source_mode == "NCERT"),
-                )
+            target_vectorstore = active_vectorstore if source_mode == "NCERT" else active_user_vectorstore
+            quiz_markdown = generate_quiz_from_sources(
+                st.session_state.selected_subject or "Physics",
+                st.session_state.selected_chapter or "All Chapters",
+                target_vectorstore,
+                get_llm(),
+                num_questions=quiz_count,
+                output_language=output_language,
+                use_metadata_filter=(source_mode == "NCERT"),
+            )
         st.subheader("Generated Quiz")
         st.markdown(quiz_markdown)
     except FileNotFoundError as err:
@@ -555,37 +508,20 @@ if user_input:
     with st.chat_message("assistant"):
         try:
             fallback_message = UPLOADS_FALLBACK_ANSWER if source_mode == "My Documents" else FALLBACK_ANSWER
-            if source_mode == "Both":
-                answer, low_confidence, citations = answer_from_multiple_sources(
-                    user_input=user_input,
-                    selected_subject=st.session_state.selected_subject or "Physics",
-                    selected_chapter=st.session_state.selected_chapter or "All Chapters",
-                    chat_history=st.session_state.chat_history,
-                    source_specs=[
-                        {"vectorstore": active_vectorstore, "use_metadata_filter": True},
-                        {"vectorstore": active_user_vectorstore, "use_metadata_filter": False},
-                    ],
-                    llm=get_llm(),
-                    reranker=get_reranker(),
-                    query_mode=query_mode,
-                    output_language=output_language,
-                    fallback_message=fallback_message,
-                )
-            else:
-                target_vectorstore = active_vectorstore if source_mode == "NCERT" else active_user_vectorstore
-                answer, low_confidence, citations = answer_from_sources(
-                    user_input=user_input,
-                    selected_subject=st.session_state.selected_subject or "Physics",
-                    selected_chapter=st.session_state.selected_chapter or "All Chapters",
-                    chat_history=st.session_state.chat_history,
-                    vectorstore=target_vectorstore,
-                    llm=get_llm(),
-                    reranker=get_reranker(),
-                    query_mode=query_mode,
-                    output_language=output_language,
-                    use_metadata_filter=(source_mode == "NCERT"),
-                    fallback_message=fallback_message,
-                )
+            target_vectorstore = active_vectorstore if source_mode == "NCERT" else active_user_vectorstore
+            answer, low_confidence, citations = answer_from_sources(
+                user_input=user_input,
+                selected_subject=st.session_state.selected_subject or "Physics",
+                selected_chapter=st.session_state.selected_chapter or "All Chapters",
+                chat_history=st.session_state.chat_history,
+                vectorstore=target_vectorstore,
+                llm=get_llm(),
+                reranker=get_reranker(),
+                query_mode=query_mode,
+                output_language=output_language,
+                use_metadata_filter=(source_mode == "NCERT"),
+                fallback_message=fallback_message,
+            )
         except FileNotFoundError as err:
             error_id = new_error_id()
             logger.exception(
