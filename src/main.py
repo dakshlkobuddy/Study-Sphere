@@ -1,144 +1,104 @@
 import os
-from dotenv import load_dotenv
 import streamlit as st
-import torch
+from sentence_transformers import CrossEncoder
 
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
-from langchain.chains import ConversationalRetrievalChain
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.memory import ConversationBufferMemory
 
+from app_config import load_project_env, resolve_device, get_unified_vector_db_path
 from chatbot_utility import get_chapter_list
 from get_yt_video import get_yt_video_link
+from qa_engine import answer_from_sources
 
 
 # ------------------------- LOAD ENV ------------------------- #
 working_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(working_dir)
-
-# Load env from both project root and src directory for predictable local runs.
-load_dotenv(os.path.join(parent_dir, ".env"))
-load_dotenv(os.path.join(working_dir, ".env"), override=True)
-
-
-def resolve_device() -> str:
-    device = os.getenv('DEVICE', 'cpu').strip().lower()
-
-    # Guard against invalid/unsupported devices to avoid runtime model transfer errors.
-    if device.startswith('cuda') and not torch.cuda.is_available():
-        return 'cpu'
-    if device == 'mps' and not (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()):
-        return 'cpu'
-
-    return device
+parent_dir = load_project_env(working_dir)
 
 
 DEVICE = resolve_device()
-
+UNIFIED_VECTOR_DB_PATH = get_unified_vector_db_path(parent_dir)
 subjects_list = ["Physics", "Chemistry", "Biology"]
 
 
-# ------------------------- VECTOR DB PATH ------------------------- #
-def get_vector_db_path(chapter, subject):
-    subject = subject.lower()
-
-    if chapter == "All Chapters":
-        return f"{parent_dir}/vector_db/class_12_{subject}_vector_db"
-
-    return f"{parent_dir}/chapters_vector_db/{subject}/{chapter}"
-
-
-# ------------------------- SETUP CHAIN ------------------------- #
-def setup_chain(selected_chapter, selected_subject):
-    vector_db_path = get_vector_db_path(selected_chapter, selected_subject)
-
+@st.cache_resource
+def get_embeddings():
     try:
-        embeddings = HuggingFaceEmbeddings(
+        return HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-mpnet-base-v2",
-            model_kwargs={"device": DEVICE}
+            model_kwargs={"device": DEVICE},
         )
     except NotImplementedError as err:
         if "meta tensor" not in str(err).lower():
             raise
-
-        # Fallback for meta-device initialization bugs in upstream torch/transformers combos.
-        embeddings = HuggingFaceEmbeddings(
+        return HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-mpnet-base-v2",
-            model_kwargs={"device": "cpu"}
+            model_kwargs={"device": "cpu"},
         )
 
-    vectorstore = Chroma(
-        persist_directory=vector_db_path,
-        embedding_function=embeddings
+
+@st.cache_resource
+def get_vectorstore():
+    if not os.path.isdir(UNIFIED_VECTOR_DB_PATH):
+        raise FileNotFoundError(
+            "Unified vector DB not found. Run `python src/vectorize_script.py --unified` first."
+        )
+    return Chroma(
+        persist_directory=UNIFIED_VECTOR_DB_PATH,
+        embedding_function=get_embeddings(),
     )
 
-    llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 
-    memory = ConversationBufferMemory(
-        llm=llm,
-        output_key='answer',
-        memory_key='chat_history',
-        return_messages=True
-    )
-
-    chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        memory=memory,
-        retriever=vectorstore.as_retriever(
-            search_type="mmr",
-            search_kwargs={"k": 8, "fetch_k": 20}
-        ),
-        return_source_documents=True,
-        get_chat_history=lambda h: h,
-        verbose=True
-    )
-
-    return chain
+@st.cache_resource
+def get_llm():
+    return ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 
 
-# ------------------------- STREAMLIT UI ------------------------- #
-st.set_page_config(
-    page_title="Study Sphere",
-    page_icon="♻️",
-    layout="centered"
-)
+@st.cache_resource
+def get_reranker():
+    try:
+        return CrossEncoder("BAAI/bge-reranker-base")
+    except Exception:
+        return None
 
-st.title("📚 Study Sphere")
 
-# Session State Setup
+st.set_page_config(page_title="Study Sphere", page_icon="S", layout="centered")
+st.title("Study Sphere")
+
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "video_history" not in st.session_state:
     st.session_state.video_history = []
+if "selected_subject" not in st.session_state:
+    st.session_state.selected_subject = None
+if "selected_chapter" not in st.session_state:
+    st.session_state.selected_chapter = None
 
-
-# ------------------------- SELECT SUBJECT ------------------------- #
 selected_subject = st.selectbox(
     label="Select a Subject from class 12",
     options=subjects_list,
-    index=None
+    index=None,
 )
 
+selected_chapter = None
 if selected_subject:
     chapter_list = get_chapter_list(selected_subject) + ["All Chapters"]
-
     selected_chapter = st.selectbox(
         label=f"Select a Chapter from class 12 - {selected_subject}",
         options=chapter_list,
-        index=0
+        index=0,
     )
 
-    if selected_chapter:
-        if st.session_state.get('selected_chapter') != selected_chapter:
-            st.session_state.chat_chain = setup_chain(
-                selected_chapter, selected_subject
-            )
-
+if selected_subject and selected_chapter:
+    selection_changed = (
+        st.session_state.selected_subject != selected_subject
+        or st.session_state.selected_chapter != selected_chapter
+    )
+    if selection_changed:
+        st.session_state.selected_subject = selected_subject
         st.session_state.selected_chapter = selected_chapter
 
-
-# ------------------------- DISPLAY CHAT HISTORY ------------------------- #
 for idx, message in enumerate(st.session_state.chat_history):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -150,80 +110,47 @@ for idx, message in enumerate(st.session_state.chat_history):
                 for title, link in videos:
                     st.info(f"{title}\n\nLink: {link}")
 
+chat_ready = selected_subject is not None and selected_chapter is not None
+if not chat_ready:
+    st.info("Select subject and chapter first to start chatting.")
 
-# ------------------------- USER INPUT ------------------------- #
-user_input = st.chat_input("Ask Your Doubts Here!")
+user_input = st.chat_input("Ask your question from selected sources", disabled=not chat_ready)
 
 if user_input:
-    st.session_state.chat_history.append(
-        {"role": "user", "content": user_input}
-    )
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
     st.session_state.video_history.append(None)
 
     with st.chat_message("user"):
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        response = st.session_state.chat_chain({"question": user_input})
-        answer = response["answer"]
+        try:
+            answer, low_confidence = answer_from_sources(
+                user_input,
+                st.session_state.selected_subject,
+                st.session_state.selected_chapter,
+                st.session_state.chat_history,
+                get_vectorstore(),
+                get_llm(),
+                get_reranker(),
+            )
+        except FileNotFoundError as err:
+            answer = str(err)
+            low_confidence = True
+
         st.markdown(answer)
 
-        # -----------------------------------------------------------
-        # 100% FINAL VIDEO BLOCKER (NEVER FAILS)
-        # -----------------------------------------------------------
-
-        answer_lower = answer.strip().lower()
-
-        block_keywords = [
-            "not provided",
-            "not mentioned",
-            "not in this chapter",
-            "not found",
-            "no information",
-            "not related",
-            "doesn't mention",
-            "does not mention",
-            "the text you provided",
-            "the provided text",
-            "the given text",
-            "the context does not",
-            "context does not",
-            "irrelevant",
-            "cannot be found",
-            "not available in this chapter",
-        ]
-
-        # Check phrasing
-        should_block_video = any(keyword in answer_lower for keyword in block_keywords)
-
-        # Also block if retrieved text is irrelevant / too small
-        retrieved_text = ""
-        if "source_documents" in response:
-            retrieved_text = " ".join(
-                [d.page_content for d in response["source_documents"]]
-            )
-            if len(retrieved_text.strip()) < 50:
-                should_block_video = True
-
-        # FINAL DECISION
-        if should_block_video:
-            video_refs = []   # do NOT show any video section OR message
+        if low_confidence:
+            video_refs = []
         else:
             titles, links = get_yt_video_link(user_input)
             video_refs = []
-
             if titles and links:
                 st.subheader("Video Reference")
                 max_videos = min(3, len(titles), len(links))
-
                 for i in range(max_videos):
                     st.info(f"{titles[i]}\n\nLink: {links[i]}")
                     video_refs.append((titles[i], links[i]))
-            else:
-                video_refs = []   # silently ignore
 
-        # Save to streamlit session
-        st.session_state.chat_history.append(
-            {"role": "assistant", "content": answer}
-        )
+        st.session_state.chat_history.append({"role": "assistant", "content": answer})
         st.session_state.video_history.append(video_refs)

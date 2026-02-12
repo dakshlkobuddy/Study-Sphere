@@ -1,6 +1,7 @@
 streamlit==1.49.1
 python-dotenv==1.1.1
-torch==2.5.1
+torch==2.10.0
+pypdf==5.1.0
 nltk==3.9.1
 unstructured==0.18.14
 unstructured[pdf]==0.18.14
@@ -13,3 +14,4 @@ transformers==4.56.0
 sentence-transformers==5.1.0
 youtube-search-python==1.6.6
 httpx==0.27.0
+pytest==8.3.3
