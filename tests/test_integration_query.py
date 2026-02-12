@@ -61,7 +61,7 @@ def test_end_to_end_query_against_fixture_db(tmp_path):
         embedding_function=embeddings,
     )
 
-    answer, used_fallback = answer_from_sources(
+    answer, used_fallback, citations = answer_from_sources(
         user_input="What is electric field?",
         selected_subject="Physics",
         selected_chapter="1. Electric Charges and Fields",
@@ -73,4 +73,4 @@ def test_end_to_end_query_against_fixture_db(tmp_path):
 
     assert used_fallback is False
     assert "force per unit" in answer.lower()
-
+    assert len(citations) > 0
