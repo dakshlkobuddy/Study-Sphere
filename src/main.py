@@ -27,8 +27,6 @@ from upload_utility import build_user_vector_db
 from upload_utility import cleanup_old_session_data, validate_uploaded_files
 
 
-groq_api_key = st.secrets["GROQ_API_KEY"]
-
 working_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = load_project_env(working_dir)
 DEVICE = resolve_device()
@@ -78,7 +76,7 @@ def get_user_vectorstore(user_db_path, session_id):
 
 @st.cache_resource
 def get_llm():
-    return ChatGroq(model="llama-3.3-70b-versatile", temperature=0, api_key=st.secrets["GROQ_API_KEY"])
+    return ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 
 
 @st.cache_resource
