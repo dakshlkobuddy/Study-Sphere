@@ -7,6 +7,8 @@ from io import BytesIO
 import streamlit as st
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from sentence_transformers import CrossEncoder
 
 from langchain_chroma import Chroma
@@ -22,6 +24,10 @@ from qa_engine import (
     generate_quiz_from_sources,
     FALLBACK_ANSWER,
     UPLOADS_FALLBACK_ANSWER,
+    FALLBACK_ANSWER_HI,
+    UPLOADS_FALLBACK_ANSWER_HI,
+    LOW_RELIABILITY_MESSAGE,
+    LOW_RELIABILITY_MESSAGE_HI,
 )
 from upload_utility import build_user_vector_db
 from upload_utility import cleanup_old_session_data, validate_uploaded_files
@@ -124,6 +130,21 @@ def _chat_to_pdf_bytes(chat_history, subject, chapter, mode, language):
     pdf = canvas.Canvas(buffer, pagesize=A4)
     _, page_height = A4
     y = page_height - 50
+    font_name = "Helvetica"
+
+    # Use a Unicode Devanagari font for Hindi text to avoid square glyph boxes.
+    devanagari_font_path = os.path.join(
+        parent_dir, "assets", "fonts", "NotoSansDevanagari-Regular.ttf"
+    )
+    if os.path.exists(devanagari_font_path):
+        try:
+            pdfmetrics.registerFont(TTFont("NotoDevanagari", devanagari_font_path))
+            if (language or "").strip().lower() == "hindi":
+                font_name = "NotoDevanagari"
+        except Exception:
+            font_name = "Helvetica"
+
+    pdf.setFont(font_name, 12)
 
     header = (
         f"Study Sphere Chat Export | Subject: {subject or 'N/A'} | Chapter: {chapter or 'N/A'} | "
@@ -141,6 +162,7 @@ def _chat_to_pdf_bytes(chat_history, subject, chapter, mode, language):
             if y < 50:
                 pdf.showPage()
                 y = page_height - 50
+                pdf.setFont(font_name, 12)
             pdf.drawString(40, y, line)
             y -= 14
         y -= 8
@@ -148,6 +170,34 @@ def _chat_to_pdf_bytes(chat_history, subject, chapter, mode, language):
     pdf.save()
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def _latest_qa_for_export(chat_history):
+    """
+    Export only the latest user -> assistant exchange instead of the full session.
+    """
+    if not chat_history:
+        return []
+
+    assistant_idx = None
+    for idx in range(len(chat_history) - 1, -1, -1):
+        if chat_history[idx].get("role") == "assistant":
+            assistant_idx = idx
+            break
+
+    if assistant_idx is None:
+        return [chat_history[-1]]
+
+    user_idx = None
+    for idx in range(assistant_idx - 1, -1, -1):
+        if chat_history[idx].get("role") == "user":
+            user_idx = idx
+            break
+
+    if user_idx is None:
+        return [chat_history[assistant_idx]]
+
+    return [chat_history[user_idx], chat_history[assistant_idx]]
 
 
 def _display_source_name(filename):
@@ -496,7 +546,7 @@ if chat_ready and generate_quiz_clicked:
         )
         st.error(f"Quiz generation failed. Error ID: {error_id}. Details: {err}")
 pdf_data = _chat_to_pdf_bytes(
-    st.session_state.chat_history,
+    _latest_qa_for_export(st.session_state.chat_history),
     st.session_state.selected_subject,
     st.session_state.selected_chapter,
     query_mode,
@@ -521,7 +571,16 @@ if user_input:
     with st.chat_message("assistant"):
         with st.spinner("Generating answer..."):
             try:
-                fallback_message = UPLOADS_FALLBACK_ANSWER if source_mode == "My Documents" else FALLBACK_ANSWER
+                if output_language == "Hindi":
+                    fallback_message = (
+                        UPLOADS_FALLBACK_ANSWER_HI if source_mode == "My Documents" else FALLBACK_ANSWER_HI
+                    )
+                    low_reliability_message = LOW_RELIABILITY_MESSAGE_HI
+                else:
+                    fallback_message = (
+                        UPLOADS_FALLBACK_ANSWER if source_mode == "My Documents" else FALLBACK_ANSWER
+                    )
+                    low_reliability_message = LOW_RELIABILITY_MESSAGE
                 target_vectorstore = active_vectorstore if source_mode == "NCERT" else active_user_vectorstore
                 answer, low_confidence, citations = answer_from_sources(
                     user_input=user_input,
@@ -532,9 +591,10 @@ if user_input:
                     llm=get_llm(),
                     reranker=get_reranker(),
                     query_mode=query_mode,
-                    output_language=output_language,
-                    use_metadata_filter=(source_mode == "NCERT"),
-                    fallback_message=fallback_message,
+                output_language=output_language,
+                use_metadata_filter=(source_mode == "NCERT"),
+                fallback_message=fallback_message,
+                low_reliability_message=low_reliability_message,
                 )
             except FileNotFoundError as err:
                 error_id = new_error_id()

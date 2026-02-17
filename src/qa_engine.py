@@ -1,4 +1,6 @@
 import math
+import difflib
+import re
 
 from retrieval_utility import (
     retrieve_with_mmr_and_rerank,
@@ -11,6 +13,9 @@ from retrieval_utility import (
 FALLBACK_ANSWER = "I don't know from the selected source material."
 UPLOADS_FALLBACK_ANSWER = "Not found in uploaded docs."
 LOW_RELIABILITY_MESSAGE = "I couldn't find reliable info in selected sources."
+FALLBACK_ANSWER_HI = "चयनित स्रोत सामग्री में उत्तर नहीं मिला।"
+UPLOADS_FALLBACK_ANSWER_HI = "चयनित अपलोडेड दस्तावेज़ों में उत्तर नहीं मिला।"
+LOW_RELIABILITY_MESSAGE_HI = "चयनित स्रोतों में विश्वसनीय जानकारी नहीं मिली।"
 
 
 def _mode_instruction(query_mode):
@@ -90,6 +95,75 @@ def should_use_fallback(scored_docs, confidence, threshold):
     return confidence < threshold
 
 
+def _extract_vocab(text):
+    return set(re.findall(r"[a-z]{4,}", (text or "").lower()))
+
+
+def _build_source_vocab(
+    user_input,
+    selected_subject,
+    selected_chapter,
+    vectorstore,
+    use_metadata_filter,
+):
+    search_kwargs = {"query": user_input, "k": 14}
+    if use_metadata_filter:
+        search_kwargs["filter"] = build_metadata_filter(selected_subject, selected_chapter)
+    docs = vectorstore.similarity_search(**search_kwargs)
+
+    vocab = set()
+    for doc in docs:
+        vocab.update(_extract_vocab(doc.page_content))
+    vocab.update(_extract_vocab(selected_subject))
+    vocab.update(_extract_vocab(selected_chapter))
+    return vocab
+
+
+def _correct_query_with_vocab(user_input, vocab):
+    if not vocab:
+        return user_input
+
+    def _replace(match):
+        word = match.group(0)
+        lower = word.lower()
+        if len(lower) < 5 or not lower.isalpha() or lower in vocab:
+            return word
+        suggestion = difflib.get_close_matches(lower, vocab, n=1, cutoff=0.82)
+        return suggestion[0] if suggestion else word
+
+    return re.sub(r"\b[A-Za-z]{5,}\b", _replace, user_input)
+
+
+def _try_typo_retry(
+    user_input,
+    selected_subject,
+    selected_chapter,
+    vectorstore,
+    reranker,
+    use_metadata_filter,
+):
+    vocab = _build_source_vocab(
+        user_input=user_input,
+        selected_subject=selected_subject,
+        selected_chapter=selected_chapter,
+        vectorstore=vectorstore,
+        use_metadata_filter=use_metadata_filter,
+    )
+    corrected_query = _correct_query_with_vocab(user_input, vocab)
+    if corrected_query.strip().lower() == user_input.strip().lower():
+        return None, None, None, None
+
+    scored_docs, confidence, retrieval_cfg = _retrieve_scored_docs(
+        user_input=corrected_query,
+        selected_subject=selected_subject,
+        selected_chapter=selected_chapter,
+        vectorstore=vectorstore,
+        reranker=reranker,
+        use_metadata_filter=use_metadata_filter,
+    )
+    return corrected_query, scored_docs, confidence, retrieval_cfg
+
+
 def _retrieve_scored_docs(
     user_input,
     selected_subject,
@@ -142,7 +216,9 @@ def answer_from_sources(
     output_language="English",
     use_metadata_filter=True,
     fallback_message=FALLBACK_ANSWER,
+    low_reliability_message=LOW_RELIABILITY_MESSAGE,
 ):
+    query_for_prompt = user_input
     scored_docs, confidence, retrieval_cfg = _retrieve_scored_docs(
         user_input=user_input,
         selected_subject=selected_subject,
@@ -152,8 +228,28 @@ def answer_from_sources(
         use_metadata_filter=use_metadata_filter,
     )
 
+    initial_fallback = should_use_fallback(
+        scored_docs=scored_docs,
+        confidence=confidence,
+        threshold=retrieval_cfg["confidence_threshold"],
+    ) or (scored_docs and confidence < 0.5)
+    if initial_fallback:
+        corrected_query, retry_docs, retry_confidence, retry_cfg = _try_typo_retry(
+            user_input=user_input,
+            selected_subject=selected_subject,
+            selected_chapter=selected_chapter,
+            vectorstore=vectorstore,
+            reranker=reranker,
+            use_metadata_filter=use_metadata_filter,
+        )
+        if corrected_query is not None:
+            scored_docs = retry_docs
+            confidence = retry_confidence
+            retrieval_cfg = retry_cfg
+            query_for_prompt = corrected_query
+
     if scored_docs and confidence < 0.5:
-        return LOW_RELIABILITY_MESSAGE, True, []
+        return low_reliability_message, True, []
 
     if should_use_fallback(
         scored_docs=scored_docs,
@@ -178,7 +274,7 @@ Conversation history:
 {history_text}
 
 Question:
-{user_input}
+{query_for_prompt}
 
 Context:
 {context_text}
