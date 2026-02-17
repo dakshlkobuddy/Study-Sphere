@@ -41,19 +41,6 @@ subjects_list = ["Physics", "Chemistry", "Biology"]
 logger = get_logger()
 
 
-def ensure_unified_db():
-    if os.path.isdir(UNIFIED_VECTOR_DB_PATH):
-        return
-    from vectorize_book import vectorize_unified_db
-
-    subjects = ["physics", "chemistry", "biology"]
-    with st.spinner("First-time setup: building unified vector DB..."):
-        vectorize_unified_db(subjects=subjects, recreate=False)
-
-
-ensure_unified_db()
-
-
 @st.cache_resource(show_spinner=False)
 def get_embeddings():
     try:
@@ -74,7 +61,8 @@ def get_embeddings():
 def get_vectorstore():
     if not os.path.isdir(UNIFIED_VECTOR_DB_PATH):
         raise FileNotFoundError(
-            "Unified vector DB not found. Run `python src/vectorize_script.py --unified` first."
+            "Unified vector DB not found on this deployment. "
+            "Prebuild and include `vector_db/class_12_unified_vector_db` in the app package."
         )
     return Chroma(
         persist_directory=UNIFIED_VECTOR_DB_PATH,
