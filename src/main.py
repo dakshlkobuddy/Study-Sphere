@@ -35,7 +35,20 @@ subjects_list = ["Physics", "Chemistry", "Biology"]
 logger = get_logger()
 
 
-@st.cache_resource
+def ensure_unified_db():
+    if os.path.isdir(UNIFIED_VECTOR_DB_PATH):
+        return
+    from vectorize_book import vectorize_unified_db
+
+    subjects = ["physics", "chemistry", "biology"]
+    with st.spinner("First-time setup: building unified vector DB..."):
+        vectorize_unified_db(subjects=subjects, recreate=False)
+
+
+ensure_unified_db()
+
+
+@st.cache_resource(show_spinner=False)
 def get_embeddings():
     try:
         return HuggingFaceEmbeddings(
@@ -51,7 +64,7 @@ def get_embeddings():
         )
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_vectorstore():
     if not os.path.isdir(UNIFIED_VECTOR_DB_PATH):
         raise FileNotFoundError(
@@ -63,7 +76,7 @@ def get_vectorstore():
     )
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_user_vectorstore(user_db_path, session_id):
     if not user_db_path or not os.path.isdir(user_db_path):
         raise FileNotFoundError("No uploaded document DB found for current session.")
@@ -74,12 +87,12 @@ def get_user_vectorstore(user_db_path, session_id):
     )
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_llm():
     return ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_reranker():
     try:
         return CrossEncoder("BAAI/bge-reranker-base")
@@ -506,50 +519,51 @@ if user_input:
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        try:
-            fallback_message = UPLOADS_FALLBACK_ANSWER if source_mode == "My Documents" else FALLBACK_ANSWER
-            target_vectorstore = active_vectorstore if source_mode == "NCERT" else active_user_vectorstore
-            answer, low_confidence, citations = answer_from_sources(
-                user_input=user_input,
-                selected_subject=st.session_state.selected_subject or "Physics",
-                selected_chapter=st.session_state.selected_chapter or "All Chapters",
-                chat_history=st.session_state.chat_history,
-                vectorstore=target_vectorstore,
-                llm=get_llm(),
-                reranker=get_reranker(),
-                query_mode=query_mode,
-                output_language=output_language,
-                use_metadata_filter=(source_mode == "NCERT"),
-                fallback_message=fallback_message,
-            )
-        except FileNotFoundError as err:
-            error_id = new_error_id()
-            logger.exception(
-                "answer_generation_failed_file_not_found",
-                extra={"event": "answer_generation_failed", "error_id": error_id, "source_mode": source_mode},
-            )
-            answer = f"{err} (Error ID: {error_id})"
-            low_confidence = True
-            citations = []
-        except Exception as err:
-            error_id = new_error_id()
-            logger.exception(
-                "answer_generation_failed",
-                extra={"event": "answer_generation_failed", "error_id": error_id, "source_mode": source_mode},
-            )
-            answer = f"Something went wrong while generating the answer. Error ID: {error_id}"
-            low_confidence = True
-            citations = []
+        with st.spinner("Generating answer..."):
+            try:
+                fallback_message = UPLOADS_FALLBACK_ANSWER if source_mode == "My Documents" else FALLBACK_ANSWER
+                target_vectorstore = active_vectorstore if source_mode == "NCERT" else active_user_vectorstore
+                answer, low_confidence, citations = answer_from_sources(
+                    user_input=user_input,
+                    selected_subject=st.session_state.selected_subject or "Physics",
+                    selected_chapter=st.session_state.selected_chapter or "All Chapters",
+                    chat_history=st.session_state.chat_history,
+                    vectorstore=target_vectorstore,
+                    llm=get_llm(),
+                    reranker=get_reranker(),
+                    query_mode=query_mode,
+                    output_language=output_language,
+                    use_metadata_filter=(source_mode == "NCERT"),
+                    fallback_message=fallback_message,
+                )
+            except FileNotFoundError as err:
+                error_id = new_error_id()
+                logger.exception(
+                    "answer_generation_failed_file_not_found",
+                    extra={"event": "answer_generation_failed", "error_id": error_id, "source_mode": source_mode},
+                )
+                answer = f"{err} (Error ID: {error_id})"
+                low_confidence = True
+                citations = []
+            except Exception as err:
+                error_id = new_error_id()
+                logger.exception(
+                    "answer_generation_failed",
+                    extra={"event": "answer_generation_failed", "error_id": error_id, "source_mode": source_mode},
+                )
+                answer = f"Something went wrong while generating the answer. Error ID: {error_id}"
+                low_confidence = True
+                citations = []
 
-        if low_confidence:
-            video_refs = []
-        else:
-            titles, links = get_yt_video_link(user_input)
-            video_refs = []
-            if titles and links:
-                max_videos = min(3, len(titles), len(links))
-                for i in range(max_videos):
-                    video_refs.append((titles[i], links[i]))
+            if low_confidence:
+                video_refs = []
+            else:
+                titles, links = get_yt_video_link(user_input)
+                video_refs = []
+                if titles and links:
+                    max_videos = min(3, len(titles), len(links))
+                    for i in range(max_videos):
+                        video_refs.append((titles[i], links[i]))
 
         _render_assistant_tabs(answer, citations, video_refs)
 
